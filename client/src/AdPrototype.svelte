@@ -2,14 +2,17 @@
     import { onMount } from 'svelte';
 
     // State variables
-    let imageUrls = Array(3).fill(''); // Reduced to 3
-    let uploadedFiles = Array(3).fill(null); // Reduced to 3
-    let generatedImagePrompts = Array(3).fill(''); // Reduced to 3
+    let imageUrls = Array(3).fill(''); // For 'link' source type
+    let uploadedFiles = Array(3).fill(null); // To store File objects for 'upload' source type
+    let localBase64Images = Array(3).fill(''); // To store Base64 strings of uploaded/generated images locally
+    let generatedImagePrompts = Array(3).fill(''); // For 'generate' source type
     let logicDescription = '';
     let generatedAdHtml = "<p style='font-family: Inter, sans-serif; text-align: center; color: #6b7280;'>Тут буде відображатись ваша реклама</p>";
     let message = '';
     let showMessageBox = false;
     let imageSourceType = 'link'; // 'link', 'upload', 'generate'
+    let isGeneratingImages = false; // New state for image generation loading
+    let isLoadingAd = false; // New state for overall ad generation loading
 
     // Function to handle changes in image URL input fields
     function handleImageUrlChange(index, event) {
@@ -17,17 +20,26 @@
         imageUrls = imageUrls; // Trigger reactivity in Svelte
     }
 
-    // Function to handle file input changes
+    // Function to handle file input changes for 'upload'
     async function handleFileUpload(index, event) {
         const file = event.target.files[0];
         if (file) {
             uploadedFiles[index] = file;
-            uploadedFiles = uploadedFiles; // Trigger reactivity
-            // Optionally, you could preview the image here if needed
+            try {
+                // Convert file to Base64 and store locally
+                localBase64Images[index] = await fileToBase64(file);
+            } catch (error) {
+                console.error('Error converting file to Base64:', error);
+                showMessage('Помилка завантаження файлу: ' + error.message);
+                uploadedFiles[index] = null;
+                localBase64Images[index] = '';
+            }
         } else {
             uploadedFiles[index] = null;
-            uploadedFiles = uploadedFiles;
+            localBase64Images[index] = '';
         }
+        uploadedFiles = uploadedFiles; // Trigger reactivity
+        localBase64Images = localBase64Images; // Trigger reactivity
     }
 
     // Function to handle generated image prompt changes
@@ -58,15 +70,48 @@
         });
     }
 
+    // Function to inject local Base64 images into the generated HTML
+    async function injectLocalImagesIntoHtml(htmlString, imageBase64Array) {
+        console.log('DEBUG: injectLocalImagesIntoHtml called.');
+        console.log('DEBUG: Initial HTML string received:', htmlString.substring(0, 500) + '...'); // Log a snippet
+        console.log('DEBUG: imageBase64Array:', imageBase64Array.map(img => img ? img.substring(0, 50) + '...' : 'empty')); // Log snippets of Base64
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlString, 'text/html');
+
+        let imagesInjectedCount = 0;
+        for (let i = 0; i < imageBase64Array.length; i++) {
+            if (imageBase64Array[i]) {
+                const imgElement = doc.getElementById(`ad-image-${i}`);
+                if (imgElement) {
+                    imgElement.src = imageBase64Array[i];
+                    console.log(`DEBUG: Injected local image into #ad-image-${i}`);
+                    imagesInjectedCount++;
+                } else {
+                    console.warn(`WARN: Placeholder image element #ad-image-${i} not found in generated HTML.`);
+                }
+            } else {
+                console.log(`DEBUG: No Base64 image found for index ${i}.`);
+            }
+        }
+        console.log(`DEBUG: Total images attempted to inject: ${imageBase64Array.length}`);
+        console.log(`DEBUG: Total images successfully injected: ${imagesInjectedCount}`);
+        return doc.documentElement.outerHTML; // Return the modified HTML string
+    }
+
+
     // Function to handle the ad generation process
     async function generateAd() {
-        let mediaData = []; // This will hold URLs, Base64 strings, or generation prompts
+        isLoadingAd = true; // Start overall loading
+        let mediaDataForBackend = []; // This will hold URLs or metadata for the backend
+        localBase64Images = Array(3).fill(''); // Clear previous local images
 
         // --- DEBUGGING LOGS ---
         console.log('--- generateAd function called ---');
         console.log('imageSourceType:', imageSourceType);
         console.log('Current imageUrls:', imageUrls);
         console.log('Current uploadedFiles:', uploadedFiles);
+        console.log('Current localBase64Images (before processing):', localBase64Images); // New log for local Base64
         console.log('Current generatedImagePrompts:', generatedImagePrompts);
         console.log('Current logicDescription:', logicDescription);
         // --- END DEBUGGING LOGS ---
@@ -77,63 +122,135 @@
             console.log('Active Image URLs (link):', activeImageUrls); // Debug log
             if (activeImageUrls.length === 0) {
                 showMessage('Будь ласка, надайте хоча б одне посилання на зображення.');
+                isLoadingAd = false;
                 return;
             }
-            mediaData = activeImageUrls;
+            mediaDataForBackend = activeImageUrls; // Send URLs directly
         } else if (imageSourceType === 'upload') {
             const activeFiles = uploadedFiles.filter(file => file !== null);
-            console.log('Active Uploaded Files:', activeFiles); // Debug log
+            console.log('Active Uploaded Files (for metadata):', activeFiles); // Debug log
             if (activeFiles.length === 0) {
                 showMessage('Будь ласка, завантажте хоча б одне зображення.');
+                isLoadingAd = false;
                 return;
             }
-            // Convert files to Base64 strings for sending to backend
+
+            // Await all file conversions before proceeding
+            const conversionPromises = activeFiles.map(file => fileToBase64(file));
             try {
-                for (const file of activeFiles) {
-                    const base64 = await fileToBase64(file);
-                    mediaData.push(base64);
-                }
+                const convertedImages = await Promise.all(conversionPromises);
+                localBase64Images = convertedImages; // Store all converted Base64 images
+                localBase64Images = localBase64Images; // Trigger reactivity
+                console.log('DEBUG: All uploaded files converted to Base64:', localBase64Images.map(img => img ? img.substring(0, 50) + '...' : 'empty'));
             } catch (error) {
-                showMessage('Помилка під час перетворення зображень: ' + error.message);
-                console.error('Error converting files to Base64:', error);
+                showMessage('Помилка під час перетворення завантажених зображень: ' + error.message);
+                console.error('Error converting uploaded files to Base64:', error);
+                isLoadingAd = false;
                 return;
             }
+
+            // For 'upload', send only metadata (e.g., index, type) to the backend
+            mediaDataForBackend = activeFiles.map((file, idx) => ({
+                index: idx,
+                type: file.type,
+            }));
         } else if (imageSourceType === 'generate') {
             const activePrompts = generatedImagePrompts.filter(prompt => prompt.trim() !== '');
-            console.log('Active Generation Prompts:', activePrompts); // Debug log
             if (activePrompts.length === 0) {
                 showMessage('Будь ласка, надайте хоча б один опис для генерації зображення.');
+                isLoadingAd = false;
                 return;
             }
-            mediaData = activePrompts;
+
+            isGeneratingImages = true; // Set loading state for image generation
+            generatedAdHtml = "<p style='font-family: Inter, sans-serif; text-align: center; color: #6b7280;'>Генеруємо зображення... Будь ласка, зачекайте.</p>";
+
+            // Generate images one by one
+            const generatedImagePromises = [];
+            for (let i = 0; i < activePrompts.length; i++) {
+                const prompt = activePrompts[i];
+                generatedImagePromises.push(
+                    fetch('http://localhost:3000/image-generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ prompt: prompt })
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            return response.json().then(errorData => {
+                                throw new Error(errorData.error || 'Помилка генерації зображення.');
+                            });
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log(`Generated image ${i + 1}:`, data.imageUrl.substring(0, 50) + '...');
+                        return data.imageUrl;
+                    })
+                    .catch(error => {
+                        console.error(`Error generating image for prompt "${prompt}":`, error);
+                        showMessage(`Помилка генерації зображення ${i + 1}: ${error.message}`);
+                        return `https://placehold.co/600x400/cccccc/333333?text=Image+Gen+Failed`; // Placeholder on error
+                    })
+                );
+            }
+
+            try {
+                const generatedResults = await Promise.all(generatedImagePromises);
+                localBase64Images = generatedResults; // Store all generated Base64 images
+                localBase64Images = localBase64Images; // Trigger reactivity
+                console.log('DEBUG: All generated images stored in localBase64Images:', localBase64Images.map(img => img ? img.substring(0, 50) + '...' : 'empty'));
+            } catch (error) {
+                showMessage('Помилка під час генерації зображень: ' + error.message);
+                console.error('Error during batch image generation:', error);
+                isLoadingAd = false;
+                isGeneratingImages = false;
+                return;
+            }
+
+            isGeneratingImages = false; // Reset loading state
+
+            // After generating all images, send metadata (prompts) to the backend for HTML generation
+            mediaDataForBackend = activePrompts.map((prompt, idx) => ({
+                index: idx,
+                prompt: prompt,
+                type: 'generated' // Indicate it's a generated image
+            }));
         }
 
         // Frontend validation for max 3 items
-        if (mediaData.length > 3) {
+        if (mediaDataForBackend.length === 0) { // Ensure at least one media item is provided
+             showMessage('Будь ласка, надайте хоча б один медіа-елемент.');
+             isLoadingAd = false;
+             return;
+        }
+        if (mediaDataForBackend.length > 3) {
             showMessage('Дозволено максимум 3 медіа-елементи (посилання, завантаження або промпти для генерації).');
+            isLoadingAd = false;
             return;
         }
 
-        console.log('Final mediaData for backend:', mediaData); // Debug log
+        console.log('Final mediaDataForBackend:', mediaDataForBackend); // Debug log
 
         if (!logicDescription.trim()) {
             showMessage('Будь ласка, надайте опис логіки реклами.');
+            isLoadingAd = false;
             return;
         }
 
-        // Set loading indicator in the iframe
-        generatedAdHtml = "<p style='font-family: Inter, sans-serif; text-align: center; color: #6b7280;'>Генерується реклама... Будь ласка, зачекайте.</p>";
+        // Set loading indicator for HTML generation
+        generatedAdHtml = "<p style='font-family: Inter, sans-serif; text-align: center; color: #6b7280;'>Генерується HTML-код... Будь ласка, зачекайте.</p>";
 
         try {
-            // Make API call to the backend
+            // Make API call to the backend for HTML generation
             const response = await fetch('http://localhost:3000/generate', { // Ensure this matches your backend URL
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    imageSourceType: imageSourceType, // Send the type to the backend
-                    mediaData: mediaData,             // Send the actual media data (URLs, Base64, or prompts)
+                    imageSourceType: imageSourceType,
+                    mediaData: mediaDataForBackend, // Send metadata or URLs
                     logicDescription: logicDescription
                 })
             });
@@ -147,13 +264,20 @@
             let htmlContent = data.html;
 
             // Remove Markdown code block fences if present
-            // This regex matches ` ```html at the beginning and ` ``` at the end, optionally with newlines
             htmlContent = htmlContent.replace(/^```html\s*\n?|\n?```$/g, '').trim();
 
-            generatedAdHtml = htmlContent; // Update the iframe content
+            // If source type is 'upload' or 'generate', inject locally stored Base64 images
+            if (imageSourceType === 'upload' || imageSourceType === 'generate') {
+                generatedAdHtml = await injectLocalImagesIntoHtml(htmlContent, localBase64Images);
+            } else {
+                generatedAdHtml = htmlContent; // For 'link', use HTML as is
+            }
+
         } catch (error) {
             generatedAdHtml = `<p style='font-family: Inter, sans-serif; text-align: center; color: #ef4444;'>Помилка під час генерації реклами: ${error.message}</p>`;
             console.error('Error generating ad:', error);
+        } finally {
+            isLoadingAd = false; // End overall loading
         }
     }
 </script>
@@ -248,13 +372,19 @@
             <button
                 on:click={generateAd}
                 class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white py-3 px-6 rounded-lg text-lg font-semibold cursor-pointer border-none shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition duration-200 ease-in-out"
+                disabled={isGeneratingImages || isLoadingAd}
             >
-                Створити рекламу
+                {#if isGeneratingImages}
+                    Генеруємо зображення...
+                {:else if isLoadingAd}
+                    Генеруємо рекламу...
+                {:else}
+                    Створити рекламу
+                {/if}
             </button>
         </div>
 
         <!-- Output Section (Ad Preview) -->
-        <!-- Removed min-h-[400px] to allow height to adapt to content -->
         <div class="output-section flex-1 bg-white rounded-xl p-6 shadow-lg flex flex-col items-center justify-center border border-gray-200">
             <h2 class="text-2xl font-bold text-gray-800 mb-4">Вивід готової реклами</h2>
             <iframe

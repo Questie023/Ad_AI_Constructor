@@ -12,20 +12,26 @@ const __dirname = path.dirname(__filename);
 // Load environment variables from .env file, explicitly specifying the path
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+// --- DEBUGGING LOG FOR API KEY ---
+console.log('DEBUG: Value of process.env.MY_APP_GEMINI_API_KEY:', process.env.MY_APP_GEMINI_API_KEY);
+// --- END DEBUGGING LOG ---
+
 // Змінено назву змінної
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // <-- Змінено тут
+const GEMINI_API_KEY = process.env.MY_APP_GEMINI_API_KEY;
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=";
 const IMAGEN_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=";
 
 /**
  * Calls the Imagen API to generate an image based on a prompt.
+ * This function will now be called directly by the frontend or a separate backend endpoint,
+ * not by generateHtmlWithGemini, to manage token limits.
  * @param {string} promptText - The text prompt for image generation.
  * @returns {Promise<string>} - A promise that resolves with the Base64 encoded image URL.
  * @throws {Error} - Throws an error if the API call fails or returns an unexpected response.
  */
-async function generateImageWithImagen(promptText) {
+export async function generateImageWithImagen(promptText) { // Exported for potential direct use or new endpoint
     if (!GEMINI_API_KEY) {
-        throw new Error("MY_APP_GEMINI_API_KEY is not set in the .env file."); // <-- Змінено тут
+        throw new Error("MY_APP_GEMINI_API_KEY is not set in the .env file.");
     }
 
     const fullApiUrl = `${IMAGEN_API_URL}${GEMINI_API_KEY}`;
@@ -63,74 +69,52 @@ async function generateImageWithImagen(promptText) {
 }
 
 /**
- * Calls the Gemini API to generate HTML content based on provided media and logic.
+ * Calls the Gemini API to generate HTML content based on provided media (URLs or metadata) and logic.
+ * This function no longer generates images directly.
  * @param {string} imageSourceType - Type of image source ('link', 'upload', 'generate').
- * @param {Array<string>} mediaData - Array of image URLs, Base64 strings, or image generation prompts.
+ * @param {Array<string|object>} mediaData - Array of image URLs (for 'link') or metadata objects (for 'upload'/'generate').
  * @param {string} logicDescription - Description of the ad's behavior.
  * @returns {Promise<string>} - A promise that resolves with the generated HTML string.
  * @throws {Error} - Throws an error if the API call fails or returns an unexpected response.
  */
 export async function generateHtmlWithGemini(imageSourceType, mediaData, logicDescription) {
     if (!GEMINI_API_KEY) {
-        throw new Error("MY_APP_GEMINI_API_KEY is not set in the .env file."); // <-- Змінено тут
+        throw new Error("MY_APP_GEMINI_API_KEY is not set in the .env file.");
     }
 
     const fullApiUrl = `${GEMINI_API_URL}${GEMINI_API_KEY}`;
-    let imageReferences = []; // This will hold URLs or inlineData objects for the Gemini prompt
+    let imagePromptDescriptions = []; // This will hold textual descriptions for the AI
 
-    // Process mediaData based on imageSourceType
+    // Process mediaData based on imageSourceType to create textual descriptions for the AI
     if (imageSourceType === 'link') {
-        imageReferences = mediaData; // mediaData already contains URLs
+        // For 'link', send URLs directly to Gemini
+        imagePromptDescriptions = mediaData.map((url, idx) => `Зображення URL: ${url}.`);
     } else if (imageSourceType === 'upload') {
-        // mediaData contains Base64 strings from uploaded files
-        imageReferences = mediaData.map(base64String => {
-            // Extract mimeType from Base64 string (e.g., "data:image/png;base64,...")
-            const mimeType = base64String.substring(base64String.indexOf(':') + 1, base64String.indexOf(';'));
-            const data = base64String.split(',')[1]; // Get the actual Base64 data
-            return {
-                inlineData: {
-                    mimeType: mimeType,
-                    data: data
-                }
-            };
-        });
+        // For 'upload', send metadata and instruct AI to create placeholders with IDs
+        imagePromptDescriptions = mediaData.map((meta, idx) => `Зображення-плейсхолдер ${idx + 1} (тип: ${meta.type || 'невідомий'}).`);
     } else if (imageSourceType === 'generate') {
-        // mediaData contains prompts for image generation
-        // Call Imagen API for each prompt and collect the generated image URLs (Base64)
-        const generatedImageUrls = [];
-        for (const prompt of mediaData) {
-            try {
-                const imageUrl = await generateImageWithImagen(prompt);
-                generatedImageUrls.push(imageUrl);
-            } catch (error) {
-                console.warn(`Failed to generate image for prompt "${prompt}": ${error.message}`);
-                // Use a placeholder if image generation fails
-                generatedImageUrls.push(`https://placehold.co/600x400/cccccc/333333?text=Image+Gen+Failed`);
-            }
-        }
-        imageReferences = generatedImageUrls; // Gemini will receive these Base64 URLs
+        // For 'generate', send metadata (prompts) and instruct AI to create placeholders with IDs
+        imagePromptDescriptions = mediaData.map((meta, idx) => `Зображення-плейсхолдер ${idx + 1} (опис: "${meta.prompt}").`);
     }
 
-    // Construct the parts for the Gemini prompt - MADE MORE CONCISE
+    // Construct the parts for the Gemini prompt
     const promptParts = [
-        { text: `Створи адаптивний HTML, CSS (використовуй Tailwind CSS) та JavaScript код для рекламного веб-додатку.
-Реклама повинна бути повністю адаптивною для всіх розмірів екрану (мобільні, планшети, десктопи) та орієнтацій.
-Уникай внутрішніх повзунків у згенерованому HTML.
-Якщо логіка передбачає слайд-шоу або галерею, переконайся, що зображення правильно масштабуються та вирівнюються, без шпаринок між ними.
-Логіка поведінки реклами: ${logicDescription}.
-Використай надані зображення. Забезпеч інтерактивність для слайд-шоу, якщо потрібно.
-Використовуй заглушки, якщо зображення недоступні. Уникай alert()/confirm().` }
+        { text: `Створи ТІЛЬКИ ПОВНИЙ HTML, CSS (використовуй Tailwind CSS) та JavaScript код для рекламного веб-додатку. НЕ ДОДАВАЙ ЖОДНОГО ІНШОГО ТЕКСТУ, ПОЯСНЕНЬ ЧИ MARKDOWN-БЛОКІВ ОКРІМ САМОГО КОДУ.
+        Реклама повинна бути повністю адаптивною для всіх розмірів екрану (мобільні, планшети, десктопи) та орієнтацій.
+        Уникай внутрішніх повзунків у згенерованому HTML.
+        Якщо логіка передбачає слайд-шоу або галерею, переконайся, що зображення правильно масштабуються та вирівнюються, без шпаринок між ними.
+        ОБОВ'ЯЗКОВО СТВОРИ ТЕГИ <img> ДЛЯ КОЖНОГО ЗОБРАЖЕННЯ ВІДПОВІДНО ДО ІНСТРУКЦІЙ НИЖЧЕ.
+        КОЖЕН ЕЛЕМЕНТ КАРОУСЕЛІ (якщо карусель) АБО КОНТЕЙНЕР ЗОБРАЖЕННЯ ПОВИНЕН МІСТИТИ ОДИН ТЕГ <img>.
+        Приклад структури тегу <img>: <img id="ad-image-0" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Опис зображення" class="w-full h-full object-cover">. Використовуй цей порожній Base64 GIF як тимчасовий src.
+        Логіка поведінки реклами: ${logicDescription}.
+        Уникай alert()/confirm().
+        Завжди використовуй відносні одиниці (%, vw, vh) для розмірів елементів та адаптивні класи Tailwind CSS.
+        Завжди включай атрибут 'alt' для зображень.` }
     ];
 
-    // Add image references to the prompt parts
-    imageReferences.forEach(ref => {
-        if (typeof ref === 'string') {
-            // It's a URL (either from 'link' or generated Base64 URL)
-            promptParts.push({ text: `Зображення URL: ${ref}` });
-        } else if (ref.inlineData) {
-            // It's an inlineData object for Base64 image
-            promptParts.push(ref);
-        }
+    // Add image descriptions to the prompt parts
+    imagePromptDescriptions.forEach((desc, idx) => {
+        promptParts.push({ text: `Для зображення ${idx + 1}: ${desc} Створи тег <img> з id="ad-image-${idx}" та відповідним атрибутом alt.` });
     });
 
     const payload = { contents: [{ role: "user", parts: promptParts }] };
