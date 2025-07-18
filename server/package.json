@@ -1,0 +1,20 @@
+{
+  "name": "ad-generator-server",
+  "version": "1.0.0",
+  "description": "Backend for Ad Generator using Node.js and Express.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ad-generator": "file:..",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
+  }
+}

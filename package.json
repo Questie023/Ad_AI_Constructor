@@ -1,0 +1,25 @@
+{
+  "name": "ad-generator",
+  "version": "1.0.0",
+  "description": "Project to generate HTML ads based on user input and media.",
+  "main": "server/index.js",
+  "scripts": {
+    "start:server": "node server/index.js",
+    "start:client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm run start:server\" \"npm run start:client\"",
+    "install:all": "npm install && npm install --prefix client && npm install --prefix server"
+  },
+  "keywords": [
+    "ad-generator",
+    "html",
+    "svelte",
+    "nodejs",
+    "express",
+    "gemini-api"
+  ],
+  "author": "Alex Kotsur",
+  "license": "UX Stream",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
